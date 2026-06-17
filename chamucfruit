@@ -2041,9 +2041,7 @@ end;
 -- FLUENT UI ENGINE
 -- ============================================================
 
-local Fluent = loadstring(game:HttpGet(
-    "https://github.com/dawid-scripts/Fluent/releases/latest/download/main.lua"
-))()
+local Fluent = local Fluent = loadstring(game:HttpGet("https://github.com/ActualMasterOogway/Fluent-Renewed/releases/latest/download/Fluent.luau"))()
 
 local _Window = Fluent:CreateWindow({
     Title       = "ChaMuc Hub",
@@ -2051,7 +2049,7 @@ local _Window = Fluent:CreateWindow({
     TabWidth    = 160,
     Size        = UDim2.fromOffset(580, 460),
     Acrylic     = true,
-    Theme       = "Aqua",
+    Theme       = "Amethyst",
     MinimizeKey = Enum.KeyCode.RightControl,
     User = {
     Enabled = true,
