@@ -2041,7 +2041,7 @@ end;
 -- FLUENT UI ENGINE
 -- ============================================================
 
-local Fluent = local Fluent = loadstring(game:HttpGet("https://github.com/ActualMasterOogway/Fluent-Renewed/releases/latest/download/Fluent.luau"))()
+local Fluent = loadstring(game:HttpGet("https://github.com/ActualMasterOogway/Fluent-Renewed/releases/latest/download/Fluent.luau"))()
 
 local _Window = Fluent:CreateWindow({
     Title       = "ChaMuc Hub",
