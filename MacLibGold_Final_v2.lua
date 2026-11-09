@@ -220,7 +220,7 @@ function MacLib:Window(Settings)
 	base.BorderColor3 = Color3.fromRGB(0, 0, 0)
 	base.BorderSizePixel = 0
 	base.Position = UDim2.fromScale(0.5, 0.5)
-	base.Size = Settings.Size or UDim2.fromOffset(1500, 660)
+	base.Size = Settings.Size or UDim2.fromOffset(1600, 660)
 
 	local baseUIScale = Instance.new("UIScale")
 	baseUIScale.Name = "BaseUIScale"
@@ -1865,109 +1865,220 @@ local dragging_ = false
 					lastPos    = nil,
 				}
 			end
-			local _vp       = _G._MacLibVP
-			local VIEW_Y     = _vp.VIEW_Y
-			local CAM_LOOK_Y = _vp.CAM_LOOK_Y
+			local _vp        = _G._MacLibVP
 			local vpDragging = false
 			local vpLastPos  = nil
 			local charClone  = nil
 			local partMap    = {}
+			local boneMap    = {}
 			local lastCharRef = nil
+			viewport.Active = true
 
 			local function updateVPCamera()
-				local cx = math.sin(_vp.viewRotY) * _vp.CAM_DIST
-				local cz = math.cos(_vp.viewRotY) * _vp.CAM_DIST
-				local cy = _vp.CAM_LOOK_Y + math.sin(_vp.viewRotX) * _vp.CAM_DIST * 0.6
-				vpCamera.CFrame = CFrame.new(
-					Vector3.new(cx, cy, cz),
-					Vector3.new(0, _vp.CAM_LOOK_Y, 0)
+				-- Spherical orbit: yaw không giới hạn, pitch gần ±90 độ.
+				local pitch = math.clamp(_vp.viewRotX, -1.45, 1.45)
+				local horizontal = math.cos(pitch) * _vp.CAM_DIST
+				local target = Vector3.new(0, _vp.CAM_LOOK_Y, 0)
+				local cameraPosition = target + Vector3.new(
+					math.sin(_vp.viewRotY) * horizontal,
+					math.sin(pitch) * _vp.CAM_DIST,
+					math.cos(_vp.viewRotY) * horizontal
 				)
+				vpCamera.CFrame = CFrame.lookAt(cameraPosition, target)
+			end
+
+			local function stripCloneScripts(model)
+				for _, item in ipairs(model:GetDescendants()) do
+					if item:IsA("Script") or item:IsA("LocalScript") then
+						item:Destroy()
+					elseif item:IsA("BasePart") then
+						item.Anchored = true
+						item.CanCollide = false
+						item.CanTouch = false
+						item.CanQuery = false
+						item.CastShadow = false
+					elseif item:IsA("Humanoid") then
+						item.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+						item.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
+						item.NameDisplayDistance = 0
+					end
+				end
 			end
 
 			local function buildClone(char)
-				pcall(function()
-					if charClone then charClone:Destroy() end
-				end)
-				charClone = Instance.new("Model")
-				charClone.Name   = "ViewportChar"
-				charClone.Parent = worldModel
+				if not char or not char.Parent then return end
+
+				if charClone then
+					pcall(function() charClone:Destroy() end)
+					charClone = nil
+				end
+
 				partMap = {}
-				for _, rp in ipairs(char:GetDescendants()) do
-					if rp:IsA("BasePart") then
-						local ok, cp = pcall(function() return rp:Clone() end)
-						if ok and cp then
-							cp.Anchored   = true
-							cp.CanCollide = false
-							cp.CastShadow = false
-							cp.Transparency = rp.Transparency
-							for _, v in ipairs(cp:GetDescendants()) do
-								if v:IsA("Script") or v:IsA("LocalScript") then v:Destroy() end
-							end
-							cp.Parent  = charClone
-							partMap[cp] = rp
-						end
+				boneMap = {}
+
+				-- Clone the complete character hierarchy, not only BaseParts.
+				-- This retains Shirt/Pants, face decals, body colors, meshes,
+				-- accessories, layered-clothing WrapLayers and attachments.
+				local previousArchivable = {}
+				previousArchivable[char] = char.Archivable
+				pcall(function() char.Archivable = true end)
+				for _, item in ipairs(char:GetDescendants()) do
+					previousArchivable[item] = item.Archivable
+					pcall(function() item.Archivable = true end)
+				end
+
+				local cloneOk, cloneResult = pcall(function()
+					return char:Clone()
+				end)
+
+				for item, oldValue in pairs(previousArchivable) do
+					pcall(function()
+						item.Archivable = oldValue
+					end)
+				end
+
+				if not cloneOk or not cloneResult then
+					warn("[MacLib Avatar Viewer] Could not clone the complete avatar:", cloneResult)
+					lastCharRef = nil
+					return
+				end
+
+				charClone = cloneResult
+				charClone.Name = "ViewportChar"
+
+				-- Pair before stripping scripts so descendant indices still correspond.
+				local originalDescendants = char:GetDescendants()
+				local clonedDescendants = charClone:GetDescendants()
+				for index, original in ipairs(originalDescendants) do
+					local copy = clonedDescendants[index]
+					if copy and original:IsA("BasePart") and copy:IsA("BasePart") then
+						partMap[copy] = original
+					elseif copy and original:IsA("Bone") and copy:IsA("Bone") then
+						boneMap[copy] = original
 					end
 				end
+
+				stripCloneScripts(charClone)
+				charClone.Parent = worldModel
 				lastCharRef = char
 			end
 
 			local vpConn = nil
+			local vpInputBeganConnection = nil
+			local vpInputEndedConnection = nil
+			local vpInputChangedConnection = nil
+			local appearanceConnection = nil
+			local descendantAddedConnection = nil
+			local rebuildQueued = false
+
+			local function queueAppearanceRebuild(char)
+				if rebuildQueued then return end
+				rebuildQueued = true
+				task.delay(0.25, function()
+					rebuildQueued = false
+					if char == LocalPlayer.Character and viewport.Parent then
+						buildClone(char)
+					end
+				end)
+			end
 
 			local function startViewportSync()
 				if vpConn then vpConn:Disconnect() end
 				vpConn = RunService.RenderStepped:Connect(function()
 					if not viewerContainer.Parent then
-						vpConn:Disconnect(); return
+						vpConn:Disconnect()
+						vpConn = nil
+						return
 					end
+
 					local char = LocalPlayer.Character
-					if not char then updateVPCamera(); return end
+					if not char then
+						updateVPCamera()
+						return
+					end
+
 					local hrp = char:FindFirstChild("HumanoidRootPart")
-					if not hrp then updateVPCamera(); return end
-					if char ~= lastCharRef then buildClone(char) end
-					if not charClone then updateVPCamera(); return end
+					if not hrp then
+						updateVPCamera()
+						return
+					end
 
-					local hrpCF     = hrp.CFrame
+					if char ~= lastCharRef then
+						buildClone(char)
+					end
+					if not charClone or not charClone.Parent then
+						updateVPCamera()
+						return
+					end
+
+					local hrpCF = hrp.CFrame
 					local charRotCF = CFrame.Angles(0, _vp.viewRotY, 0)
-					local baseOff   = CFrame.new(0, _vp.VIEW_Y, 0)
-					local realSet   = {}
-					for _, rp in pairs(partMap) do realSet[rp] = true end
+					local baseOff = CFrame.new(0, _vp.VIEW_Y, 0)
+					local realSet = {}
 
-					-- Đồng bộ / xoá bộ phận
-					for cp, rp in pairs(partMap) do
-						if cp.Parent then
-							if rp and rp.Parent then
-								cp.CFrame = baseOff * charRotCF * hrpCF:ToObjectSpace(rp.CFrame)
-							else
-								-- Bộ phận bị mất → xoá khỏi clone
-								pcall(function() cp:Destroy() end)
-								partMap[cp] = nil
+					for _, original in pairs(partMap) do
+						realSet[original] = true
+					end
+
+					-- Keep skinned body meshes aligned with animated bones.
+					for copy, original in pairs(boneMap) do
+						if copy.Parent and original and original.Parent then
+							copy.Transform = original.Transform
+						else
+							if copy and copy.Parent then
+								copy:Destroy()
 							end
+							boneMap[copy] = nil
 						end
 					end
 
-					-- Thêm bộ phận mới (tool, accessory, v.v.)
-					for _, rp in ipairs(char:GetDescendants()) do
-						if rp:IsA("BasePart") and not realSet[rp] then
-							local ok, cp = pcall(function() return rp:Clone() end)
-							if ok and cp then
-								cp.Anchored   = true
-								cp.CanCollide = false
-								cp.CastShadow = false
-								for _, v in ipairs(cp:GetDescendants()) do
-									if v:IsA("Script") or v:IsA("LocalScript") then v:Destroy() end
+					-- Keep every cloned body/accessory part aligned with the live avatar.
+					for copy, original in pairs(partMap) do
+						if copy.Parent and original and original.Parent then
+							copy.CFrame = baseOff * charRotCF * hrpCF:ToObjectSpace(original.CFrame)
+							copy.Transparency = original.Transparency
+							copy.Color = original.Color
+							copy.Material = original.Material
+						else
+							if copy and copy.Parent then
+								copy:Destroy()
+							end
+							partMap[copy] = nil
+						end
+					end
+
+					-- Add newly created BaseParts (for example a newly equipped Tool).
+					for _, original in ipairs(char:GetDescendants()) do
+						if original:IsA("BasePart") and not realSet[original] then
+							local ok, copy = pcall(function()
+								return original:Clone()
+							end)
+							if ok and copy then
+								copy.Anchored = true
+								copy.CanCollide = false
+								copy.CanTouch = false
+								copy.CanQuery = false
+								copy.CastShadow = false
+								for _, item in ipairs(copy:GetDescendants()) do
+									if item:IsA("Script") or item:IsA("LocalScript") then
+										item:Destroy()
+									end
 								end
-								cp.Parent   = charClone
-								partMap[cp] = rp
-								realSet[rp] = true
+								copy.Parent = charClone
+								copy.CFrame = baseOff * charRotCF * hrpCF:ToObjectSpace(original.CFrame)
+								partMap[copy] = original
+								realSet[original] = true
 							end
 						end
 					end
+
 					updateVPCamera()
 				end)
 			end
 
 			task.spawn(function()
 				local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+				char:WaitForChild("HumanoidRootPart", 10)
 				task.wait(0.5)
 				buildClone(char)
 				startViewportSync()
@@ -1980,39 +2091,99 @@ local dragging_ = false
 				startViewportSync()
 			end)
 
+			-- Rebuild after Roblox finishes applying the player's appearance.
+			appearanceConnection = LocalPlayer.CharacterAppearanceLoaded:Connect(function(char)
+				if char == LocalPlayer.Character then
+					queueAppearanceRebuild(char)
+				end
+			end)
+
+			-- Rebuild if the player equips a new accessory or changes clothing at runtime.
+			local characterDescendantConnection = nil
+			local function watchCharacterAppearance(char)
+				if characterDescendantConnection then
+					characterDescendantConnection:Disconnect()
+					characterDescendantConnection = nil
+				end
+				if not char then return end
+				characterDescendantConnection = char.DescendantAdded:Connect(function(item)
+					if item:IsA("Accessory")
+						or item:IsA("Shirt")
+						or item:IsA("Pants")
+						or item:IsA("ShirtGraphic")
+						or item:IsA("BodyColors")
+						or item:IsA("CharacterMesh") then
+						queueAppearanceRebuild(char)
+					end
+				end)
+			end
+			watchCharacterAppearance(LocalPlayer.Character)
+			descendantAddedConnection = LocalPlayer.CharacterAdded:Connect(watchCharacterAppearance)
+
 			viewport.Destroying:Connect(function()
 				if vpConn then vpConn:Disconnect() end
-				pcall(function() if charClone then charClone:Destroy() end end)
+				if appearanceConnection then appearanceConnection:Disconnect() end
+				if descendantAddedConnection then descendantAddedConnection:Disconnect() end
+				if characterDescendantConnection then characterDescendantConnection:Disconnect() end
+				if vpInputBeganConnection then vpInputBeganConnection:Disconnect() end
+				if vpInputEndedConnection then vpInputEndedConnection:Disconnect() end
+				if vpInputChangedConnection then vpInputChangedConnection:Disconnect() end
+				pcall(function()
+					if charClone then charClone:Destroy() end
+				end)
 			end)
 
-			-- Drag xoay
-			-- Chuột phải để xoay nhân vật
-			viewport.InputBegan:Connect(function(input)
-				if input.UserInputType == Enum.UserInputType.MouseButton2
-				or input.UserInputType == Enum.UserInputType.Touch then
+			-- Right-button drag is captured globally so the ViewportFrame receives
+			-- rotation even when Roblox's default mouse handling processes the click.
+			local function isPointerInsideViewport(position)
+				local origin = viewport.AbsolutePosition
+				local size = viewport.AbsoluteSize
+				return position.X >= origin.X
+					and position.X <= origin.X + size.X
+					and position.Y >= origin.Y
+					and position.Y <= origin.Y + size.Y
+			end
+
+			vpInputBeganConnection = UserInputService.InputBegan:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton2 then
+					local pointer = UserInputService:GetMouseLocation()
+					if isPointerInsideViewport(pointer) then
+						vpDragging = true
+						vpLastPos = pointer
+					end
+				elseif input.UserInputType == Enum.UserInputType.Touch
+					and isPointerInsideViewport(Vector2.new(input.Position.X, input.Position.Y)) then
 					vpDragging = true
-					vpLastPos  = Vector2.new(input.Position.X, input.Position.Y)
+					vpLastPos = Vector2.new(input.Position.X, input.Position.Y)
 				end
 			end)
 
-			UserInputService.InputEnded:Connect(function(input)
+			vpInputEndedConnection = UserInputService.InputEnded:Connect(function(input)
 				if input.UserInputType == Enum.UserInputType.MouseButton2
-				or input.UserInputType == Enum.UserInputType.Touch then
+					or input.UserInputType == Enum.UserInputType.Touch then
 					vpDragging = false
-					vpLastPos  = nil
+					vpLastPos = nil
 				end
 			end)
 
-			UserInputService.InputChanged:Connect(function(input)
+			vpInputChangedConnection = UserInputService.InputChanged:Connect(function(input)
 				if not vpDragging or not vpLastPos then return end
-				if input.UserInputType == Enum.UserInputType.MouseMovement
-				or input.UserInputType == Enum.UserInputType.Touch then
-					local p = Vector2.new(input.Position.X, input.Position.Y)
-					local d = p - vpLastPos
-					_vp.viewRotY = _vp.viewRotY - d.X * 0.012
-					_vp.viewRotX = math.clamp(_vp.viewRotX + d.Y * 0.008, -0.45, 0.65)
-					vpLastPos = p
+
+				local delta
+				if input.UserInputType == Enum.UserInputType.MouseMovement then
+					-- Use raw mouse delta because Roblox may lock the cursor while RMB is held.
+					delta = Vector2.new(input.Delta.X, input.Delta.Y)
+				elseif input.UserInputType == Enum.UserInputType.Touch then
+					local currentPosition = Vector2.new(input.Position.X, input.Position.Y)
+					delta = currentPosition - vpLastPos
+					vpLastPos = currentPosition
+				else
+					return
 				end
+
+				_vp.viewRotY = _vp.viewRotY - delta.X * 0.012
+				_vp.viewRotX = math.clamp(_vp.viewRotX + delta.Y * 0.012, -1.45, 1.45)
+				updateVPCamera()
 			end)
 
 			updateVPCamera()
