@@ -220,14 +220,9 @@ function MacLib:Window(Settings)
 	base.BorderColor3 = Color3.fromRGB(0, 0, 0)
 	base.BorderSizePixel = 0
 	base.Position = UDim2.fromScale(0.5, 0.5)
-	local requestedWindowSize = Settings.Size or UDim2.fromOffset(1015, 660)
-	-- Use a fixed 1200 px width; preserve the caller's requested height.
-	base.Size = UDim2.new(
-		0,
-		1200,
-		requestedWindowSize.Y.Scale,
-		requestedWindowSize.Y.Offset
-	)
+	-- Keep the requested UI width while making the default height slightly taller.
+	-- Fixed initial size: 1200 x 680 px.
+	base.Size = UDim2.fromOffset(1200, 680)
 
 	local baseUIScale = Instance.new("UIScale")
 	baseUIScale.Name = "BaseUIScale"
