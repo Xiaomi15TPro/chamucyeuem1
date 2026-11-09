@@ -41,6 +41,7 @@ local assets = {
 	colorTarget = "rbxassetid://73265255323268",
 	grid = "rbxassetid://121484455191370",
 	globe = "rbxassetid://108952102602834",
+	gear  = "rbxassetid://6031097225",
 	transform = "rbxassetid://90336395745819",
 	dropdown = "rbxassetid://18865373378",
 	sliderbar = "rbxassetid://18772615246",
@@ -461,7 +462,7 @@ function MacLib:Window(Settings)
 
 	local globalSettingsButton = Instance.new("ImageButton")
 	globalSettingsButton.Name = "GlobalSettingsButton"
-	globalSettingsButton.Image = assets.globe
+	globalSettingsButton.Image = assets.gear
 	globalSettingsButton.ImageTransparency = 0.5
 	globalSettingsButton.AnchorPoint = Vector2.new(1, 0.5)
 	globalSettingsButton.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
@@ -1881,7 +1882,7 @@ local dragging_ = false
 				local cx = math.sin(_vp.viewRotY) * _vp.CAM_DIST
 				local cz = math.cos(_vp.viewRotY) * _vp.CAM_DIST
 				local cy = _vp.CAM_LOOK_Y + math.sin(_vp.viewRotX) * _vp.CAM_DIST * 0.6
-				vpCamera.CFrame = CFrame.lookAt(
+				vpCamera.CFrame = CFrame.new(
 					Vector3.new(cx, cy, cz),
 					Vector3.new(0, _vp.CAM_LOOK_Y, 0)
 				)
@@ -5473,7 +5474,7 @@ end
 			math.cos(rotation) * distance
 		)
 
-		viewportCamera.CFrame = CFrame.lookAt(
+		viewportCamera.CFrame = CFrame.new(
 			cameraPosition,
 			targetPosition
 		)
