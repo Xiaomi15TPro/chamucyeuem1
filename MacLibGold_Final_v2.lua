@@ -1791,224 +1791,529 @@ local dragging_ = false
 			elementsScrollingUIListLayout.SortOrder = Enum.SortOrder.LayoutOrder
 			elementsScrollingUIListLayout.Parent = elementsScrolling
 			-- ════════════════════════════════════════════════════════
-			-- 3D CHARACTER VIEWER
-			-- ViewportFrame đồng bộ nhân vật theo thời gian thực:
-			-- hiện đúng bộ phận còn/mất, cầm đồ, ngồi, chèo, v.v.
-			-- Kéo chuột để xoay 360°, cuộn để zoom
+			-- 3D CHARACTER VIEWER + MOTION RECORDER
+			-- Full avatar clone (clothes/accessories/body colors), orbit camera,
+			-- mouse-wheel zoom, local pose recording and playback.
+			-- Only the ViewportFrame clone is changed; the real character is untouched.
 			-- ════════════════════════════════════════════════════════
 
-			-- Đổi outer layout sang Vertical: viewer trên, cột nội dung dưới
+			-- Viewer sits above the normal tab controls, matching the existing layout.
 			elementsScrollingUIListLayout.FillDirection = Enum.FillDirection.Vertical
 			elementsScrollingUIListLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
 			elementsScrollingUIListLayout.Padding = UDim.new(0, 10)
 
 			local viewerContainer = Instance.new("Frame")
-			viewerContainer.Name        = "CharacterViewer"
+			viewerContainer.Name = "CharacterViewer"
 			viewerContainer.BackgroundTransparency = 1
 			viewerContainer.BorderSizePixel = 0
-			viewerContainer.Size        = UDim2.new(1, 0, 0, 215)
+			viewerContainer.Size = UDim2.new(1, 0, 0, 215)
 			viewerContainer.LayoutOrder = 0
-			viewerContainer.Parent      = elementsScrolling
+			viewerContainer.Parent = elementsScrolling
 
 			local viewport = Instance.new("ViewportFrame")
-			viewport.Name              = "CharViewport"
-			viewport.BackgroundColor3  = Color3.fromRGB(8, 8, 8)
+			viewport.Name = "CharViewport"
+			viewport.BackgroundColor3 = Color3.fromRGB(8, 8, 8)
 			viewport.BackgroundTransparency = 0.05
-			viewport.BorderSizePixel   = 0
-			viewport.Size              = UDim2.fromScale(1, 1)
-			viewport.LightColor        = Color3.fromRGB(255, 245, 220)
-			viewport.LightDirection    = Vector3.new(-1, -2, -1).Unit
-			viewport.Ambient           = Color3.fromRGB(85, 80, 72)
-			viewport.Parent            = viewerContainer
+			viewport.BorderSizePixel = 0
+			viewport.Size = UDim2.fromScale(1, 1)
+			viewport.LightColor = Color3.fromRGB(255, 245, 220)
+			viewport.LightDirection = Vector3.new(-1, -2, -1).Unit
+			viewport.Ambient = Color3.fromRGB(85, 80, 72)
+			viewport.Active = true
+			viewport.Parent = viewerContainer
 
 			local vpCorner = Instance.new("UICorner")
 			vpCorner.CornerRadius = UDim.new(0, 8)
 			vpCorner.Parent = viewport
 
 			local vpStroke = Instance.new("UIStroke")
-			vpStroke.Color           = Color3.fromRGB(212, 175, 55)
-			vpStroke.Transparency    = 0.5
+			vpStroke.Color = Color3.fromRGB(212, 175, 55)
+			vpStroke.Transparency = 0.5
 			vpStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-			vpStroke.Parent          = viewport
-
-			local vpTip = Instance.new("TextLabel")
-			vpTip.Text               = "drag to rotate  •  scroll to zoom"
-			vpTip.FontFace           = Font.new(assets.interFont)
-			vpTip.TextSize           = 11
-			vpTip.TextColor3         = Color3.fromRGB(255, 255, 255)
-			vpTip.TextTransparency   = 0.5
-			vpTip.BackgroundTransparency = 1
-			vpTip.BorderSizePixel    = 0
-			vpTip.Size               = UDim2.new(1, -10, 0, 16)
-			vpTip.Position           = UDim2.new(0, 5, 1, -20)
-			vpTip.AnchorPoint        = Vector2.new(0, 1)
-			vpTip.TextXAlignment     = Enum.TextXAlignment.Right
-			vpTip.ZIndex             = 3
-			vpTip.Parent             = viewport
+			vpStroke.Parent = viewport
 
 			local worldModel = Instance.new("WorldModel")
+			worldModel.Name = "CharacterPreviewWorld"
 			worldModel.Parent = viewport
 
 			local vpCamera = Instance.new("Camera")
-			vpCamera.FieldOfView  = 45
+			vpCamera.Name = "CharacterPreviewCamera"
+			vpCamera.FieldOfView = 45
+			vpCamera.Parent = viewport
 			viewport.CurrentCamera = vpCamera
 
-			local viewRotY   = math.pi
-			local viewRotX   = 0.08
-			local CAM_DIST   = 6
-			local VIEW_Y     = 3
-			local CAM_LOOK_Y = 4
+			local viewRotY = math.pi
+			local viewRotX = 0.08
+			local cameraDistance = 6
+			local minCameraDistance = 2.5
+			local maxCameraDistance = 16
 
-			local vpDragging = false
-			local vpLastPos  = nil
-			local charClone  = nil
-			local partMap    = {}
-			local lastCharRef = nil
+			local isDragging = false
+			local lastPointerPosition = nil
+			local characterClone = nil
+			local lastCharacter = nil
+			local partMap = {}
+			local viewCenterLocal = Vector3.new(0, 0.5, 0)
+			local recorderStatus
 
-			local function updateVPCamera()
-				local cx = math.sin(viewRotY) * CAM_DIST
-				local cz = math.cos(viewRotY) * CAM_DIST
-				local cy = CAM_LOOK_Y + math.sin(viewRotX) * CAM_DIST * 0.6
-				vpCamera.CFrame = CFrame.lookAt(
-					Vector3.new(cx, cy, cz),
-					Vector3.new(0, CAM_LOOK_Y, 0)
-				)
+			local recordedFrames = {}
+			local recording = false
+			local playing = false
+			local recordAccumulator = 0
+			local playbackClock = 0
+			local recordStartRoot = nil
+			local RECORD_RATE = 20
+			local RECORD_INTERVAL = 1 / RECORD_RATE
+			local MAX_RECORD_SECONDS = 120
+			local MAX_RECORD_FRAMES = RECORD_RATE * MAX_RECORD_SECONDS
+
+			local function setRecorderStatus(text, color)
+				recorderStatus.Text = text
+				recorderStatus.TextColor3 = color or Color3.fromRGB(230, 230, 230)
 			end
 
-			local function buildClone(char)
-				pcall(function()
-					if charClone then charClone:Destroy() end
-				end)
-				charClone = Instance.new("Model")
-				charClone.Name   = "ViewportChar"
-				charClone.Parent = worldModel
+			local function pointInsideViewport(position)
+				local p = viewport.AbsolutePosition
+				local z = viewport.AbsoluteSize
+				return position.X >= p.X and position.X <= p.X + z.X
+					and position.Y >= p.Y and position.Y <= p.Y + z.Y
+			end
+
+			local function updateVPCamera(rootTransform)
+				rootTransform = rootTransform or CFrame.new()
+				local targetPosition = rootTransform:PointToWorldSpace(viewCenterLocal)
+				local horizontal = math.cos(viewRotX) * cameraDistance
+				local vertical = math.sin(viewRotX) * cameraDistance
+				local cameraOffset = Vector3.new(
+					math.sin(viewRotY) * horizontal,
+					vertical,
+					math.cos(viewRotY) * horizontal
+				)
+				vpCamera.CFrame = CFrame.lookAt(targetPosition + cameraOffset, targetPosition)
+			end
+
+			local function clearClone()
+				if characterClone then
+					pcall(function() characterClone:Destroy() end)
+				end
+				characterClone = nil
 				partMap = {}
-				for _, rp in ipairs(char:GetDescendants()) do
-					if rp:IsA("BasePart") then
-						local ok, cp = pcall(function() return rp:Clone() end)
-						if ok and cp then
-							cp.Anchored   = true
-							cp.CanCollide = false
-							cp.CastShadow = false
-							cp.Transparency = rp.Transparency
-							for _, v in ipairs(cp:GetDescendants()) do
-								if v:IsA("Script") or v:IsA("LocalScript") then v:Destroy() end
-							end
-							cp.Parent  = charClone
-							partMap[cp] = rp
-						end
+			end
+
+			local function cloneFullCharacter(character)
+				-- Some avatar hierarchies contain non-Archivable descendants.
+				-- Temporarily enable cloning, then restore every original value.
+				local archiveStates = {}
+				local function allowArchive(instance)
+					local ok, oldValue = pcall(function()
+						return instance.Archivable
+					end)
+					if ok then
+						table.insert(archiveStates, {instance, oldValue})
+						pcall(function() instance.Archivable = true end)
 					end
 				end
-				lastCharRef = char
-			end
 
-			local vpConn = nil
+				allowArchive(character)
+				for _, descendant in ipairs(character:GetDescendants()) do
+					allowArchive(descendant)
+				end
 
-			local function startViewportSync()
-				if vpConn then vpConn:Disconnect() end
-				vpConn = RunService.RenderStepped:Connect(function()
-					if not viewerContainer.Parent then
-						vpConn:Disconnect(); return
-					end
-					local char = LocalPlayer.Character
-					if not char then updateVPCamera(); return end
-					local hrp = char:FindFirstChild("HumanoidRootPart")
-					if not hrp then updateVPCamera(); return end
-					if char ~= lastCharRef then buildClone(char) end
-					if not charClone then updateVPCamera(); return end
-
-					local hrpCF     = hrp.CFrame
-					local charRotCF = CFrame.Angles(0, viewRotY, 0)
-					local baseOff   = CFrame.new(0, VIEW_Y, 0)
-					local realSet   = {}
-					for _, rp in pairs(partMap) do realSet[rp] = true end
-
-					-- Đồng bộ / xoá bộ phận
-					for cp, rp in pairs(partMap) do
-						if cp.Parent then
-							if rp and rp.Parent then
-								cp.CFrame = baseOff * charRotCF * hrpCF:ToObjectSpace(rp.CFrame)
-							else
-								-- Bộ phận bị mất → xoá khỏi clone
-								pcall(function() cp:Destroy() end)
-								partMap[cp] = nil
-							end
-						end
-					end
-
-					-- Thêm bộ phận mới (tool, accessory, v.v.)
-					for _, rp in ipairs(char:GetDescendants()) do
-						if rp:IsA("BasePart") and not realSet[rp] then
-							local ok, cp = pcall(function() return rp:Clone() end)
-							if ok and cp then
-								cp.Anchored   = true
-								cp.CanCollide = false
-								cp.CastShadow = false
-								for _, v in ipairs(cp:GetDescendants()) do
-									if v:IsA("Script") or v:IsA("LocalScript") then v:Destroy() end
-								end
-								cp.Parent   = charClone
-								partMap[cp] = rp
-								realSet[rp] = true
-							end
-						end
-					end
-					updateVPCamera()
+				local cloneOK, cloneOrError = pcall(function()
+					return character:Clone()
 				end)
+
+				for _, state in ipairs(archiveStates) do
+					pcall(function()
+						state[1].Archivable = state[2]
+					end)
+				end
+
+				if not cloneOK then
+					warn("[MacLib] Avatar preview could not clone character:", cloneOrError)
+					return nil
+				end
+				return cloneOrError
 			end
 
-			task.spawn(function()
-				local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-				task.wait(0.5)
-				buildClone(char)
-				startViewportSync()
+			local function buildClone(character)
+				if not character or not character.Parent then return false end
+				local sourceRoot = character:FindFirstChild("HumanoidRootPart")
+				if not sourceRoot then return false end
+
+				clearClone()
+				recording = false
+				playing = false
+				recordAccumulator = 0
+				playbackClock = 0
+				recordStartRoot = nil
+				table.clear(recordedFrames)
+
+				local clone = cloneFullCharacter(character)
+				if not clone then
+					setRecorderStatus("AVATAR CLONE FAILED", Color3.fromRGB(255, 120, 110))
+					return false
+				end
+
+				clone.Name = "ViewportCharacter"
+				clone.Parent = worldModel
+
+				-- Pair source and cloned BaseParts before removing scripts/joints.
+				local sourceDescendants = character:GetDescendants()
+				local cloneDescendants = clone:GetDescendants()
+				partMap = {}
+
+				for index, sourcePart in ipairs(sourceDescendants) do
+					local clonePart = cloneDescendants[index]
+					if sourcePart:IsA("BasePart") and clonePart and clonePart:IsA("BasePart") then
+						clonePart.Anchored = true
+						clonePart.CanCollide = false
+						clonePart.CanTouch = false
+						clonePart.CanQuery = false
+						clonePart.Massless = true
+						table.insert(partMap, {
+							Source = sourcePart,
+							Clone = clonePart,
+						})
+					end
+				end
+
+				-- The viewport uses manually sampled poses, not running avatar scripts.
+				for _, descendant in ipairs(clone:GetDescendants()) do
+					if descendant:IsA("Script")
+						or descendant:IsA("LocalScript")
+						or descendant:IsA("ModuleScript")
+						or descendant:IsA("Animator")
+						or descendant:IsA("AnimationController")
+						or descendant:IsA("JointInstance")
+						or descendant:IsA("WeldConstraint")
+					then
+						pcall(function() descendant:Destroy() end)
+					end
+				end
+
+				characterClone = clone
+				lastCharacter = character
+
+				local boxOK, boxCF, boxSize = pcall(function()
+					return character:GetBoundingBox()
+				end)
+				if boxOK and boxCF and boxSize then
+					viewCenterLocal = sourceRoot.CFrame:PointToObjectSpace(boxCF.Position)
+					cameraDistance = math.clamp(math.max(5, boxSize.Magnitude * 0.85), minCameraDistance, maxCameraDistance)
+				else
+					viewCenterLocal = Vector3.new(0, 0.5, 0)
+					cameraDistance = 6
+				end
+
+				setRecorderStatus("LIVE PREVIEW", Color3.fromRGB(212, 175, 55))
+				updateVPCamera()
+				return true
+			end
+
+			local function getLiveRoot()
+				local character = LocalPlayer.Character
+				return character and character:FindFirstChild("HumanoidRootPart")
+			end
+
+			local function captureFrame()
+				local root = getLiveRoot()
+				if not root then return end
+				if not recordStartRoot then recordStartRoot = root.CFrame end
+
+				local frame = {
+					Root = recordStartRoot:ToObjectSpace(root.CFrame),
+					Parts = {},
+				}
+
+				for _, pair in ipairs(partMap) do
+					local sourcePart = pair.Source
+					local clonePart = pair.Clone
+					if sourcePart and sourcePart.Parent and clonePart and clonePart.Parent then
+						frame.Parts[clonePart] = root.CFrame:ToObjectSpace(sourcePart.CFrame)
+					end
+				end
+
+				table.insert(recordedFrames, frame)
+				if #recordedFrames >= MAX_RECORD_FRAMES then
+					recording = false
+					setRecorderStatus("SAVED • 120s LIMIT", Color3.fromRGB(255, 205, 100))
+				else
+					setRecorderStatus(string.format("RECORDING • %.1fs", #recordedFrames / RECORD_RATE), Color3.fromRGB(255, 105, 95))
+				end
+			end
+
+			local function applyLivePose()
+				local root = getLiveRoot()
+				if not root or not characterClone then return end
+
+				for _, pair in ipairs(partMap) do
+					local sourcePart = pair.Source
+					local clonePart = pair.Clone
+					if sourcePart and sourcePart.Parent and clonePart and clonePart.Parent then
+						clonePart.CFrame = root.CFrame:ToObjectSpace(sourcePart.CFrame)
+					end
+				end
+				updateVPCamera(CFrame.new())
+			end
+
+			local function applyRecordedPose(frameA, frameB, alpha)
+				if not characterClone or not frameA then return end
+				frameB = frameB or frameA
+				alpha = math.clamp(alpha or 0, 0, 1)
+
+				local rootA = frameA.Root or CFrame.new()
+				local rootB = frameB.Root or rootA
+				local rootTransform = rootA:Lerp(rootB, alpha)
+
+				for _, pair in ipairs(partMap) do
+					local clonePart = pair.Clone
+					local relA = frameA.Parts[clonePart]
+					local relB = frameB.Parts[clonePart] or relA
+					if clonePart and clonePart.Parent and relA then
+						local relativePose = relB and relA:Lerp(relB, alpha) or relA
+						clonePart.CFrame = rootTransform * relativePose
+					end
+				end
+				updateVPCamera(rootTransform)
+			end
+
+			local toolbar = Instance.new("Frame")
+			toolbar.Name = "AvatarRecorderToolbar"
+			toolbar.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+			toolbar.BackgroundTransparency = 0.12
+			toolbar.BorderSizePixel = 0
+			toolbar.Position = UDim2.new(0, 8, 0, 8)
+			toolbar.Size = UDim2.fromOffset(286, 30)
+			toolbar.ZIndex = 5
+			toolbar.Parent = viewport
+			local toolbarCorner = Instance.new("UICorner")
+			toolbarCorner.CornerRadius = UDim.new(0, 6)
+			toolbarCorner.Parent = toolbar
+			local toolbarStroke = Instance.new("UIStroke")
+			toolbarStroke.Color = Color3.fromRGB(212, 175, 55)
+			toolbarStroke.Transparency = 0.65
+			toolbarStroke.Parent = toolbar
+
+			local function makeRecorderButton(name, text, x, width, color)
+				local button = Instance.new("TextButton")
+				button.Name = name
+				button.Position = UDim2.fromOffset(x, 4)
+				button.Size = UDim2.fromOffset(width, 22)
+				button.BackgroundColor3 = color
+				button.BackgroundTransparency = 0.08
+				button.BorderSizePixel = 0
+				button.AutoButtonColor = true
+				button.FontFace = Font.new(assets.interFont, Enum.FontWeight.Bold)
+				button.Text = text
+				button.TextColor3 = Color3.fromRGB(255, 255, 255)
+				button.TextSize = 10
+				button.ZIndex = 6
+				button.Parent = toolbar
+				local corner = Instance.new("UICorner")
+				corner.CornerRadius = UDim.new(0, 4)
+				corner.Parent = button
+				return button
+			end
+
+			local recordButton = makeRecorderButton("Record", "REC", 4, 48, Color3.fromRGB(155, 42, 38))
+			local finishButton = makeRecorderButton("FinishRecord", "SAVE", 56, 48, Color3.fromRGB(120, 90, 30))
+			local playButton = makeRecorderButton("PlayRecording", "PLAY", 108, 48, Color3.fromRGB(35, 115, 65))
+			local stopButton = makeRecorderButton("StopPlayback", "STOP", 160, 48, Color3.fromRGB(65, 65, 65))
+			local clearButton = makeRecorderButton("ClearRecording", "CLEAR", 212, 68, Color3.fromRGB(65, 65, 65))
+
+			recorderStatus = Instance.new("TextLabel")
+			recorderStatus.Name = "RecorderStatus"
+			recorderStatus.BackgroundTransparency = 1
+			recorderStatus.AnchorPoint = Vector2.new(1, 0)
+			recorderStatus.Position = UDim2.new(1, -9, 0, 9)
+			recorderStatus.Size = UDim2.new(1, -305, 0, 28)
+			recorderStatus.FontFace = Font.new(assets.interFont, Enum.FontWeight.SemiBold)
+			recorderStatus.Text = "LIVE PREVIEW"
+			recorderStatus.TextColor3 = Color3.fromRGB(212, 175, 55)
+			recorderStatus.TextSize = 10
+			recorderStatus.TextXAlignment = Enum.TextXAlignment.Right
+			recorderStatus.TextTruncate = Enum.TextTruncate.AtEnd
+			recorderStatus.ZIndex = 5
+			recorderStatus.Parent = viewport
+
+			local vpTip = Instance.new("TextLabel")
+			vpTip.Name = "ViewportTip"
+			vpTip.Text = "drag to rotate  •  scroll to zoom"
+			vpTip.FontFace = Font.new(assets.interFont)
+			vpTip.TextSize = 11
+			vpTip.TextColor3 = Color3.fromRGB(255, 255, 255)
+			vpTip.TextTransparency = 0.35
+			vpTip.BackgroundTransparency = 1
+			vpTip.BorderSizePixel = 0
+			vpTip.Size = UDim2.new(1, -14, 0, 16)
+			vpTip.Position = UDim2.new(0, 7, 1, -5)
+			vpTip.AnchorPoint = Vector2.new(0, 1)
+			vpTip.TextXAlignment = Enum.TextXAlignment.Right
+			vpTip.ZIndex = 3
+			vpTip.Parent = viewport
+
+			recordButton.Activated:Connect(function()
+				if not characterClone or not getLiveRoot() then
+					setRecorderStatus("WAITING FOR AVATAR", Color3.fromRGB(255, 120, 110))
+					return
+				end
+				playing = false
+				recording = true
+				recordAccumulator = 0
+				playbackClock = 0
+				recordStartRoot = getLiveRoot().CFrame
+				table.clear(recordedFrames)
+				captureFrame()
+				setRecorderStatus("RECORDING • 0.1s", Color3.fromRGB(255, 105, 95))
 			end)
 
-			LocalPlayer.CharacterAdded:Connect(function(newChar)
-				lastCharRef = nil
-				task.wait(1)
-				buildClone(newChar)
-				startViewportSync()
+			finishButton.Activated:Connect(function()
+				if recording then
+					recording = false
+					setRecorderStatus(string.format("SAVED • %.1fs", #recordedFrames / RECORD_RATE), Color3.fromRGB(212, 175, 55))
+				else
+					setRecorderStatus(#recordedFrames > 0 and "RECORDING SAVED" or "NO RECORDING", Color3.fromRGB(190, 190, 190))
+				end
+			end)
+
+			playButton.Activated:Connect(function()
+				if #recordedFrames < 2 then
+					setRecorderStatus("RECORD A MOTION FIRST", Color3.fromRGB(255, 150, 100))
+					return
+				end
+				recording = false
+				playing = true
+				playbackClock = 0
+				setRecorderStatus("PLAYING • " .. string.format("%.1fs", #recordedFrames / RECORD_RATE), Color3.fromRGB(120, 220, 150))
+			end)
+
+			stopButton.Activated:Connect(function()
+				recording = false
+				playing = false
+				playbackClock = 0
+				setRecorderStatus("LIVE PREVIEW", Color3.fromRGB(212, 175, 55))
+			end)
+
+			clearButton.Activated:Connect(function()
+				recording = false
+				playing = false
+				playbackClock = 0
+				recordAccumulator = 0
+				recordStartRoot = nil
+				table.clear(recordedFrames)
+				setRecorderStatus("RECORDING CLEARED", Color3.fromRGB(190, 190, 190))
+			end)
+
+			local viewportConnections = {}
+			local function keepViewportConnection(connection)
+				table.insert(viewportConnections, connection)
+				return connection
+			end
+
+			keepViewportConnection(viewport.InputBegan:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton1
+					or input.UserInputType == Enum.UserInputType.Touch then
+					isDragging = true
+					lastPointerPosition = Vector2.new(input.Position.X, input.Position.Y)
+				end
+			end))
+
+			keepViewportConnection(UserInputService.InputEnded:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton1
+					or input.UserInputType == Enum.UserInputType.Touch then
+					isDragging = false
+					lastPointerPosition = nil
+				end
+			end))
+
+			keepViewportConnection(UserInputService.InputChanged:Connect(function(input)
+				if isDragging and lastPointerPosition
+					and (input.UserInputType == Enum.UserInputType.MouseMovement
+						or input.UserInputType == Enum.UserInputType.Touch) then
+					local pointer = Vector2.new(input.Position.X, input.Position.Y)
+					local delta = pointer - lastPointerPosition
+					viewRotY = viewRotY - delta.X * 0.012
+					viewRotX = math.clamp(viewRotX + delta.Y * 0.008, -0.55, 0.65)
+					lastPointerPosition = pointer
+				elseif input.UserInputType == Enum.UserInputType.MouseWheel then
+					local pointer = UserInputService:GetMouseLocation()
+					if pointInsideViewport(pointer) then
+						cameraDistance = math.clamp(
+							cameraDistance - input.Position.Z * 0.65,
+							minCameraDistance,
+							maxCameraDistance
+						)
+					end
+				end
+			end))
+
+			local viewportRenderConnection
+			viewportRenderConnection = RunService.RenderStepped:Connect(function(deltaTime)
+				if not viewerContainer.Parent then
+					if viewportRenderConnection then viewportRenderConnection:Disconnect() end
+					return
+				end
+
+				local character = LocalPlayer.Character
+				if character and character ~= lastCharacter then
+					buildClone(character)
+				end
+
+				if not characterClone then
+					updateVPCamera()
+					return
+				end
+
+				if recording then
+					recordAccumulator = recordAccumulator + deltaTime
+					while recordAccumulator >= RECORD_INTERVAL do
+						recordAccumulator = recordAccumulator - RECORD_INTERVAL
+						captureFrame()
+						if not recording then break end
+					end
+				end
+
+				if playing and #recordedFrames >= 2 then
+					playbackClock = playbackClock + deltaTime * RECORD_RATE
+					local frameIndex = math.floor(playbackClock) + 1
+					if frameIndex >= #recordedFrames then
+						applyRecordedPose(recordedFrames[#recordedFrames], recordedFrames[#recordedFrames], 0)
+						playing = false
+						setRecorderStatus("PLAYBACK FINISHED", Color3.fromRGB(212, 175, 55))
+					else
+						local alpha = playbackClock - math.floor(playbackClock)
+						applyRecordedPose(recordedFrames[frameIndex], recordedFrames[frameIndex + 1], alpha)
+					end
+				else
+					applyLivePose()
+				end
+			end)
+
+			keepViewportConnection(viewportRenderConnection)
+
+			keepViewportConnection(LocalPlayer.CharacterAdded:Connect(function(newCharacter)
+				task.wait(0.75)
+				if viewerContainer.Parent and newCharacter == LocalPlayer.Character then
+					buildClone(newCharacter)
+				end
+			end))
+
+			local initialCharacter = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+			task.spawn(function()
+				if not initialCharacter then return end
+				local root = initialCharacter:WaitForChild("HumanoidRootPart", 10)
+				if root and viewerContainer.Parent then
+					buildClone(initialCharacter)
+				end
 			end)
 
 			viewport.Destroying:Connect(function()
-				if vpConn then vpConn:Disconnect() end
-				pcall(function() if charClone then charClone:Destroy() end end)
-			end)
-
-			-- Drag xoay
-			viewport.InputBegan:Connect(function(input)
-				if input.UserInputType == Enum.UserInputType.MouseButton1
-				or input.UserInputType == Enum.UserInputType.Touch then
-					vpDragging = true
-					vpLastPos  = Vector2.new(input.Position.X, input.Position.Y)
+				for _, connection in ipairs(viewportConnections) do
+					pcall(function() connection:Disconnect() end)
 				end
-			end)
-
-			UserInputService.InputEnded:Connect(function(input)
-				if input.UserInputType == Enum.UserInputType.MouseButton1
-				or input.UserInputType == Enum.UserInputType.Touch then
-					vpDragging = false
-					vpLastPos  = nil
-				end
-			end)
-
-			UserInputService.InputChanged:Connect(function(input)
-				if not vpDragging or not vpLastPos then return end
-				if input.UserInputType == Enum.UserInputType.MouseMovement
-				or input.UserInputType == Enum.UserInputType.Touch then
-					local p = Vector2.new(input.Position.X, input.Position.Y)
-					local d = p - vpLastPos
-					viewRotY = viewRotY - d.X * 0.012
-					viewRotX = math.clamp(viewRotX + d.Y * 0.008, -0.45, 0.65)
-					vpLastPos = p
-				end
-			end)
-
-			viewport.InputChanged:Connect(function(input)
-				if input.UserInputType == Enum.UserInputType.MouseWheel then
-					CAM_DIST = math.clamp(CAM_DIST - input.Position.Z * 0.6, 2.5, 12)
-				end
+				clearClone()
+				table.clear(recordedFrames)
 			end)
 
 			updateVPCamera()
