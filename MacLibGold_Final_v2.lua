@@ -220,7 +220,15 @@ function MacLib:Window(Settings)
 	base.BorderColor3 = Color3.fromRGB(0, 0, 0)
 	base.BorderSizePixel = 0
 	base.Position = UDim2.fromScale(0.5, 0.5)
-	base.Size = Settings.Size or UDim2.fromOffset(1600, 660)
+	local requestedWindowSize = Settings.Size or UDim2.fromOffset(1015, 660)
+	-- Enforce a wider default even when the caller passes an older Size value.
+	-- Preserve the caller's height; only the X dimension is widened.
+	base.Size = UDim2.new(
+		requestedWindowSize.X.Scale,
+		math.max(requestedWindowSize.X.Offset, 1500),
+		requestedWindowSize.Y.Scale,
+		requestedWindowSize.Y.Offset
+	)
 
 	local baseUIScale = Instance.new("UIScale")
 	baseUIScale.Name = "BaseUIScale"
@@ -1815,6 +1823,7 @@ local dragging_ = false
 			viewport.BackgroundColor3  = Color3.fromRGB(8, 8, 8)
 			viewport.BackgroundTransparency = 0.05
 			viewport.BorderSizePixel   = 0
+			viewport.Active            = true
 			viewport.Size              = UDim2.fromScale(1, 1)
 			viewport.LightColor        = Color3.fromRGB(255, 245, 220)
 			viewport.LightDirection    = Vector3.new(-1, -2, -1).Unit
@@ -1865,80 +1874,68 @@ local dragging_ = false
 					lastPos    = nil,
 				}
 			end
-			local _vp        = _G._MacLibVP
+			local _vp       = _G._MacLibVP
+			local VIEW_Y     = _vp.VIEW_Y
+			local CAM_LOOK_Y = _vp.CAM_LOOK_Y
 			local vpDragging = false
 			local vpLastPos  = nil
+			local vpInputConnections = {}
 			local charClone  = nil
 			local partMap    = {}
-			local boneMap    = {}
 			local lastCharRef = nil
-			viewport.Active = true
 
 			local function updateVPCamera()
-				-- Spherical orbit: yaw không giới hạn, pitch gần ±90 độ.
-				local pitch = math.clamp(_vp.viewRotX, -1.45, 1.45)
-				local horizontal = math.cos(pitch) * _vp.CAM_DIST
-				local target = Vector3.new(0, _vp.CAM_LOOK_Y, 0)
-				local cameraPosition = target + Vector3.new(
-					math.sin(_vp.viewRotY) * horizontal,
-					math.sin(pitch) * _vp.CAM_DIST,
-					math.cos(_vp.viewRotY) * horizontal
+				-- Orbit the camera around a stationary preview model.
+				-- Spherical coordinates allow a full horizontal orbit and a broad
+				-- vertical viewing angle without rotating the avatar with the camera.
+				local pitch = math.clamp(_vp.viewRotX, -1.25, 1.25)
+				local horizontalDist = math.cos(pitch) * _vp.CAM_DIST
+				local cx = math.sin(_vp.viewRotY) * horizontalDist
+				local cz = math.cos(_vp.viewRotY) * horizontalDist
+				local cy = _vp.CAM_LOOK_Y + math.sin(pitch) * _vp.CAM_DIST
+				vpCamera.CFrame = CFrame.lookAt(
+					Vector3.new(cx, cy, cz),
+					Vector3.new(0, _vp.CAM_LOOK_Y, 0)
 				)
-				vpCamera.CFrame = CFrame.lookAt(cameraPosition, target)
-			end
-
-			local function stripCloneScripts(model)
-				for _, item in ipairs(model:GetDescendants()) do
-					if item:IsA("Script") or item:IsA("LocalScript") then
-						item:Destroy()
-					elseif item:IsA("BasePart") then
-						item.Anchored = true
-						item.CanCollide = false
-						item.CanTouch = false
-						item.CanQuery = false
-						item.CastShadow = false
-					elseif item:IsA("Humanoid") then
-						item.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
-						item.HealthDisplayType = Enum.HumanoidHealthDisplayType.AlwaysOff
-						item.NameDisplayDistance = 0
-					end
-				end
 			end
 
 			local function buildClone(char)
-				if not char or not char.Parent then return end
-
-				if charClone then
-					pcall(function() charClone:Destroy() end)
-					charClone = nil
-				end
-
+				pcall(function()
+					if charClone then charClone:Destroy() end
+				end)
+				charClone = nil
 				partMap = {}
-				boneMap = {}
 
 				-- Clone the complete character hierarchy, not only BaseParts.
-				-- This retains Shirt/Pants, face decals, body colors, meshes,
-				-- accessories, layered-clothing WrapLayers and attachments.
-				local previousArchivable = {}
-				previousArchivable[char] = char.Archivable
-				pcall(function() char.Archivable = true end)
-				for _, item in ipairs(char:GetDescendants()) do
-					previousArchivable[item] = item.Archivable
-					pcall(function() item.Archivable = true end)
+				-- This retains Shirt/Pants, face decals, accessories, attachments,
+				-- layered-clothing wrap objects, body colors and avatar-specific parts.
+				local originalInstances = {char}
+				for _, descendant in ipairs(char:GetDescendants()) do
+					table.insert(originalInstances, descendant)
+				end
+
+				local archivableStates = {}
+				for _, instance in ipairs(originalInstances) do
+					local ok, oldValue = pcall(function()
+						return instance.Archivable
+					end)
+					if ok then
+						archivableStates[instance] = oldValue
+						pcall(function() instance.Archivable = true end)
+					end
 				end
 
 				local cloneOk, cloneResult = pcall(function()
 					return char:Clone()
 				end)
 
-				for item, oldValue in pairs(previousArchivable) do
-					pcall(function()
-						item.Archivable = oldValue
-					end)
+				-- Restore the live character's Archivable flags immediately.
+				for instance, oldValue in pairs(archivableStates) do
+					pcall(function() instance.Archivable = oldValue end)
 				end
 
 				if not cloneOk or not cloneResult then
-					warn("[MacLib Avatar Viewer] Could not clone the complete avatar:", cloneResult)
+					warn("[MacLib Avatar Preview] Could not clone the full character:", cloneResult)
 					lastCharRef = nil
 					return
 				end
@@ -1946,139 +1943,93 @@ local dragging_ = false
 				charClone = cloneResult
 				charClone.Name = "ViewportChar"
 
-				-- Pair before stripping scripts so descendant indices still correspond.
 				local originalDescendants = char:GetDescendants()
-				local clonedDescendants = charClone:GetDescendants()
-				for index, original in ipairs(originalDescendants) do
-					local copy = clonedDescendants[index]
-					if copy and original:IsA("BasePart") and copy:IsA("BasePart") then
-						partMap[copy] = original
-					elseif copy and original:IsA("Bone") and copy:IsA("Bone") then
-						boneMap[copy] = original
+				local cloneDescendants = charClone:GetDescendants()
+
+				-- Clone() preserves descendant ordering, so pair corresponding
+				-- BaseParts before removing executable objects from the preview copy.
+				for index, originalDescendant in ipairs(originalDescendants) do
+					local cloneDescendant = cloneDescendants[index]
+					if cloneDescendant
+						and originalDescendant:IsA("BasePart")
+						and cloneDescendant:IsA("BasePart") then
+						partMap[cloneDescendant] = originalDescendant
 					end
 				end
 
-				stripCloneScripts(charClone)
+				for _, instance in ipairs(charClone:GetDescendants()) do
+					if instance:IsA("Script") or instance:IsA("LocalScript") then
+						instance:Destroy()
+					elseif instance:IsA("BasePart") then
+						instance.Anchored = true
+						instance.CanCollide = false
+						instance.CanTouch = false
+						instance.CanQuery = false
+						instance.CastShadow = false
+					end
+				end
+
 				charClone.Parent = worldModel
 				lastCharRef = char
 			end
 
 			local vpConn = nil
-			local vpInputBeganConnection = nil
-			local vpInputEndedConnection = nil
-			local vpInputChangedConnection = nil
-			local appearanceConnection = nil
-			local descendantAddedConnection = nil
-			local rebuildQueued = false
-
-			local function queueAppearanceRebuild(char)
-				if rebuildQueued then return end
-				rebuildQueued = true
-				task.delay(0.25, function()
-					rebuildQueued = false
-					if char == LocalPlayer.Character and viewport.Parent then
-						buildClone(char)
-					end
-				end)
-			end
 
 			local function startViewportSync()
 				if vpConn then vpConn:Disconnect() end
 				vpConn = RunService.RenderStepped:Connect(function()
 					if not viewerContainer.Parent then
-						vpConn:Disconnect()
-						vpConn = nil
-						return
+						vpConn:Disconnect(); return
 					end
-
 					local char = LocalPlayer.Character
-					if not char then
-						updateVPCamera()
-						return
-					end
-
+					if not char then updateVPCamera(); return end
 					local hrp = char:FindFirstChild("HumanoidRootPart")
-					if not hrp then
-						updateVPCamera()
-						return
-					end
+					if not hrp then updateVPCamera(); return end
+					if char ~= lastCharRef then buildClone(char) end
+					if not charClone then updateVPCamera(); return end
 
-					if char ~= lastCharRef then
-						buildClone(char)
-					end
-					if not charClone or not charClone.Parent then
-						updateVPCamera()
-						return
-					end
+					local hrpCF     = hrp.CFrame
+					-- Keep the avatar's heading fixed; only the preview camera orbits.
+					local baseOff   = CFrame.new(0, _vp.VIEW_Y, 0)
+					local realSet   = {}
+					for _, rp in pairs(partMap) do realSet[rp] = true end
 
-					local hrpCF = hrp.CFrame
-					local charRotCF = CFrame.Angles(0, _vp.viewRotY, 0)
-					local baseOff = CFrame.new(0, _vp.VIEW_Y, 0)
-					local realSet = {}
-
-					for _, original in pairs(partMap) do
-						realSet[original] = true
-					end
-
-					-- Keep skinned body meshes aligned with animated bones.
-					for copy, original in pairs(boneMap) do
-						if copy.Parent and original and original.Parent then
-							copy.Transform = original.Transform
-						else
-							if copy and copy.Parent then
-								copy:Destroy()
+					-- Đồng bộ / xoá bộ phận
+					for cp, rp in pairs(partMap) do
+						if cp.Parent then
+							if rp and rp.Parent then
+								cp.CFrame = baseOff * hrpCF:ToObjectSpace(rp.CFrame)
+							else
+								-- Bộ phận bị mất → xoá khỏi clone
+								pcall(function() cp:Destroy() end)
+								partMap[cp] = nil
 							end
-							boneMap[copy] = nil
 						end
 					end
 
-					-- Keep every cloned body/accessory part aligned with the live avatar.
-					for copy, original in pairs(partMap) do
-						if copy.Parent and original and original.Parent then
-							copy.CFrame = baseOff * charRotCF * hrpCF:ToObjectSpace(original.CFrame)
-							copy.Transparency = original.Transparency
-							copy.Color = original.Color
-							copy.Material = original.Material
-						else
-							if copy and copy.Parent then
-								copy:Destroy()
-							end
-							partMap[copy] = nil
-						end
-					end
-
-					-- Add newly created BaseParts (for example a newly equipped Tool).
-					for _, original in ipairs(char:GetDescendants()) do
-						if original:IsA("BasePart") and not realSet[original] then
-							local ok, copy = pcall(function()
-								return original:Clone()
-							end)
-							if ok and copy then
-								copy.Anchored = true
-								copy.CanCollide = false
-								copy.CanTouch = false
-								copy.CanQuery = false
-								copy.CastShadow = false
-								for _, item in ipairs(copy:GetDescendants()) do
-									if item:IsA("Script") or item:IsA("LocalScript") then
-										item:Destroy()
-									end
+					-- Thêm bộ phận mới (tool, accessory, v.v.)
+					for _, rp in ipairs(char:GetDescendants()) do
+						if rp:IsA("BasePart") and not realSet[rp] then
+							local ok, cp = pcall(function() return rp:Clone() end)
+							if ok and cp then
+								cp.Anchored   = true
+								cp.CanCollide = false
+								cp.CastShadow = false
+								for _, v in ipairs(cp:GetDescendants()) do
+									if v:IsA("Script") or v:IsA("LocalScript") then v:Destroy() end
 								end
-								copy.Parent = charClone
-								copy.CFrame = baseOff * charRotCF * hrpCF:ToObjectSpace(original.CFrame)
-								partMap[copy] = original
-								realSet[original] = true
+								cp.Parent   = charClone
+								partMap[cp] = rp
+								realSet[rp] = true
 							end
 						end
 					end
-
 					updateVPCamera()
 				end)
 			end
 
 			task.spawn(function()
 				local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-				char:WaitForChild("HumanoidRootPart", 10)
 				task.wait(0.5)
 				buildClone(char)
 				startViewportSync()
@@ -2091,100 +2042,87 @@ local dragging_ = false
 				startViewportSync()
 			end)
 
-			-- Rebuild after Roblox finishes applying the player's appearance.
-			appearanceConnection = LocalPlayer.CharacterAppearanceLoaded:Connect(function(char)
-				if char == LocalPlayer.Character then
-					queueAppearanceRebuild(char)
-				end
-			end)
-
-			-- Rebuild if the player equips a new accessory or changes clothing at runtime.
-			local characterDescendantConnection = nil
-			local function watchCharacterAppearance(char)
-				if characterDescendantConnection then
-					characterDescendantConnection:Disconnect()
-					characterDescendantConnection = nil
-				end
-				if not char then return end
-				characterDescendantConnection = char.DescendantAdded:Connect(function(item)
-					if item:IsA("Accessory")
-						or item:IsA("Shirt")
-						or item:IsA("Pants")
-						or item:IsA("ShirtGraphic")
-						or item:IsA("BodyColors")
-						or item:IsA("CharacterMesh") then
-						queueAppearanceRebuild(char)
-					end
-				end)
-			end
-			watchCharacterAppearance(LocalPlayer.Character)
-			descendantAddedConnection = LocalPlayer.CharacterAdded:Connect(watchCharacterAppearance)
-
 			viewport.Destroying:Connect(function()
 				if vpConn then vpConn:Disconnect() end
-				if appearanceConnection then appearanceConnection:Disconnect() end
-				if descendantAddedConnection then descendantAddedConnection:Disconnect() end
-				if characterDescendantConnection then characterDescendantConnection:Disconnect() end
-				if vpInputBeganConnection then vpInputBeganConnection:Disconnect() end
-				if vpInputEndedConnection then vpInputEndedConnection:Disconnect() end
-				if vpInputChangedConnection then vpInputChangedConnection:Disconnect() end
-				pcall(function()
-					if charClone then charClone:Destroy() end
-				end)
+				for _, connection in ipairs(vpInputConnections) do
+					pcall(function() connection:Disconnect() end)
+				end
+				pcall(function() if charClone then charClone:Destroy() end end)
 			end)
 
-			-- Right-button drag is captured globally so the ViewportFrame receives
-			-- rotation even when Roblox's default mouse handling processes the click.
-			local function isPointerInsideViewport(position)
-				local origin = viewport.AbsolutePosition
+			-- Rotate the preview with right mouse drag (or touch drag).
+			-- Listen globally so the gesture still works if Roblox captures the
+			-- mouse while RMB is held. MouseMovement.Delta remains reliable when
+			-- the cursor is locked or hidden by the game camera.
+			local vpTouchInput = nil
+
+			local function isPointInsideViewport(point)
+				-- This viewer is built inside each tab. Ignore hidden tab copies
+				-- so one right-drag changes the camera only once.
+				local ancestor = viewport
+				while ancestor do
+					if ancestor:IsA("GuiObject") and not ancestor.Visible then
+						return false
+					end
+					ancestor = ancestor.Parent
+				end
+
+				local position = viewport.AbsolutePosition
 				local size = viewport.AbsoluteSize
-				return position.X >= origin.X
-					and position.X <= origin.X + size.X
-					and position.Y >= origin.Y
-					and position.Y <= origin.Y + size.Y
+				if size.X <= 0 or size.Y <= 0 then return false end
+
+				return point.X >= position.X
+					and point.X <= position.X + size.X
+					and point.Y >= position.Y
+					and point.Y <= position.Y + size.Y
 			end
 
-			vpInputBeganConnection = UserInputService.InputBegan:Connect(function(input)
-				if input.UserInputType == Enum.UserInputType.MouseButton2 then
-					local pointer = UserInputService:GetMouseLocation()
-					if isPointerInsideViewport(pointer) then
-						vpDragging = true
-						vpLastPos = pointer
-					end
-				elseif input.UserInputType == Enum.UserInputType.Touch
-					and isPointerInsideViewport(Vector2.new(input.Position.X, input.Position.Y)) then
-					vpDragging = true
-					vpLastPos = Vector2.new(input.Position.X, input.Position.Y)
-				end
-			end)
+			local function applyViewportDrag(delta)
+				if delta.Magnitude <= 0 then return end
+				_vp.viewRotY = _vp.viewRotY - delta.X * 0.012
+				_vp.viewRotX = math.clamp(_vp.viewRotX + delta.Y * 0.012, -1.25, 1.25)
+				updateVPCamera()
+			end
 
-			vpInputEndedConnection = UserInputService.InputEnded:Connect(function(input)
+			table.insert(vpInputConnections, UserInputService.InputBegan:Connect(function(input)
+				if input.UserInputType == Enum.UserInputType.MouseButton2 then
+					local mousePosition = UserInputService:GetMouseLocation()
+					if isPointInsideViewport(mousePosition) then
+						vpDragging = true
+						vpLastPos = mousePosition
+					end
+				elseif input.UserInputType == Enum.UserInputType.Touch then
+					local touchPosition = Vector2.new(input.Position.X, input.Position.Y)
+					if isPointInsideViewport(touchPosition) then
+						vpDragging = true
+						vpTouchInput = input
+						vpLastPos = touchPosition
+					end
+				end
+			end))
+
+			table.insert(vpInputConnections, UserInputService.InputChanged:Connect(function(input)
+				if not vpDragging then return end
+
+				if input.UserInputType == Enum.UserInputType.MouseMovement then
+					applyViewportDrag(input.Delta)
+				elseif input.UserInputType == Enum.UserInputType.Touch
+					and vpTouchInput == input
+					and vpLastPos then
+					local touchPosition = Vector2.new(input.Position.X, input.Position.Y)
+					applyViewportDrag(touchPosition - vpLastPos)
+					vpLastPos = touchPosition
+				end
+			end))
+
+			table.insert(vpInputConnections, UserInputService.InputEnded:Connect(function(input)
 				if input.UserInputType == Enum.UserInputType.MouseButton2
-					or input.UserInputType == Enum.UserInputType.Touch then
+					or (vpTouchInput and input == vpTouchInput) then
 					vpDragging = false
+					vpTouchInput = nil
 					vpLastPos = nil
 				end
-			end)
-
-			vpInputChangedConnection = UserInputService.InputChanged:Connect(function(input)
-				if not vpDragging or not vpLastPos then return end
-
-				local delta
-				if input.UserInputType == Enum.UserInputType.MouseMovement then
-					-- Use raw mouse delta because Roblox may lock the cursor while RMB is held.
-					delta = Vector2.new(input.Delta.X, input.Delta.Y)
-				elseif input.UserInputType == Enum.UserInputType.Touch then
-					local currentPosition = Vector2.new(input.Position.X, input.Position.Y)
-					delta = currentPosition - vpLastPos
-					vpLastPos = currentPosition
-				else
-					return
-				end
-
-				_vp.viewRotY = _vp.viewRotY - delta.X * 0.012
-				_vp.viewRotX = math.clamp(_vp.viewRotX + delta.Y * 0.012, -1.45, 1.45)
-				updateVPCamera()
-			end)
+			end))
 
 			updateVPCamera()
 
