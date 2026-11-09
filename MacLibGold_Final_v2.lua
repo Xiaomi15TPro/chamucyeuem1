@@ -1716,11 +1716,7 @@ local dragging_ = false
 			tabSwitcherName.Name = "TabSwitcherName"
 			tabSwitcherName.FontFace = Font.new(
 				assets.interFont,
-			tabSwitcherName.FontFace = Font.new(
-				assets.interFont,
 				Enum.FontWeight.SemiBold
-			)
-				Enum.FontStyle.Normal
 			)
 			tabSwitcherName.Text = Settings.Name
 			tabSwitcherName.RichText = true
