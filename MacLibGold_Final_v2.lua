@@ -221,11 +221,10 @@ function MacLib:Window(Settings)
 	base.BorderSizePixel = 0
 	base.Position = UDim2.fromScale(0.5, 0.5)
 	local requestedWindowSize = Settings.Size or UDim2.fromOffset(1015, 660)
-	-- Enforce a wider default even when the caller passes an older Size value.
-	-- Preserve the caller's height; only the X dimension is widened.
+	-- Use a fixed 1200 px width; preserve the caller's requested height.
 	base.Size = UDim2.new(
-		requestedWindowSize.X.Scale,
-		math.max(requestedWindowSize.X.Offset, 1500),
+		0,
+		1200,
 		requestedWindowSize.Y.Scale,
 		requestedWindowSize.Y.Offset
 	)
