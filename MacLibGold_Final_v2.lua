@@ -220,9 +220,14 @@ function MacLib:Window(Settings)
 	base.BorderColor3 = Color3.fromRGB(0, 0, 0)
 	base.BorderSizePixel = 0
 	base.Position = UDim2.fromScale(0.5, 0.5)
-	-- Keep the requested UI width while making the default height slightly taller.
-	-- Fixed initial size: 1200 x 680 px.
-	base.Size = UDim2.fromOffset(1200, 680)
+	local requestedWindowSize = Settings.Size or UDim2.fromOffset(1015, 660)
+	-- Keep the existing 1200 px width and add only 20 px to the requested height.
+	base.Size = UDim2.new(
+		0,
+		1200,
+		requestedWindowSize.Y.Scale,
+		requestedWindowSize.Y.Offset + 20
+	)
 
 	local baseUIScale = Instance.new("UIScale")
 	baseUIScale.Name = "BaseUIScale"
@@ -907,6 +912,33 @@ local dragging_ = false
 	local dragInput
 	local dragStart
 	local startPos
+	-- GUI controls registered here must not start dragging the window.
+	local windowDragIgnoreObjects = {}
+
+	local function isWindowDragBlocked(position)
+		for _, guiObject in ipairs(windowDragIgnoreObjects) do
+			if guiObject and guiObject.Parent then
+				local visible = true
+				local ancestor = guiObject
+				while ancestor and ancestor ~= base do
+					if ancestor:IsA("GuiObject") and not ancestor.Visible then
+						visible = false
+						break
+					end
+					ancestor = ancestor.Parent
+				end
+				if visible then
+					local absPos = guiObject.AbsolutePosition
+					local absSize = guiObject.AbsoluteSize
+					if position.X >= absPos.X and position.X <= absPos.X + absSize.X
+						and position.Y >= absPos.Y and position.Y <= absPos.Y + absSize.Y then
+						return true
+					end
+				end
+			end
+		end
+		return false
+	end
 
 	local function update(input)
 		local delta = input.Position - dragStart
@@ -915,6 +947,12 @@ local dragging_ = false
 
 	local function onDragStart(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			-- Clicking/dragging a registered control (such as the avatar zoom slider)
+			-- must not move the entire window.
+			local inputPosition = Vector2.new(input.Position.X, input.Position.Y)
+			if isWindowDragBlocked(inputPosition) then
+				return
+			end
 			dragging_ = true
 			dragStart = input.Position
 			startPos = base.Position
@@ -2128,6 +2166,8 @@ local dragging_ = false
 			zoomSliderRow.Size                   = UDim2.new(1, 0, 0, 24)
 			zoomSliderRow.LayoutOrder            = 1
 			zoomSliderRow.Parent                 = elementsScrolling
+			-- Exclude the full zoom row from the window-drag hit area.
+			table.insert(windowDragIgnoreObjects, zoomSliderRow)
 
 			local zoomLabel = Instance.new("TextLabel")
 			zoomLabel.Name               = "ZoomLabel"
